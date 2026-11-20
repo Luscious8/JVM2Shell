@@ -1,350 +1,386 @@
+# Java4Shell — OpenJDK Base64 Decoder Reproduction Lab
 
-<h1 align="center">java4shell</h1>
 <p align="center">
-  <strong>CVE-2026-114938 — OpenJDK AVX-512 Base64 Heap Overflow PoC & Detection Toolkit</strong>
-</p>
-<p align="center">
-  <img src="https://img.shields.io/badge/CVSS-9.2%20Critical-red?style=flat-square" alt="CVSS 9.2">
-  <img src="https://img.shields.io/badge/JDK-17.0.6%E2%80%9327-orange?style=flat-square" alt="Affected Versions">
-  <img src="https://img.shields.io/badge/Fixed-17.0.21.1%20%7C%2021.0.13.1%20%7C%2025.0.5.1%20%7C%2027.0.1.1-green?style=flat-square" alt="Fixed Versions">
-  <img src="https://img.shields.io/badge/CPU-AVX--512%20VBMI-blue?style=flat-square" alt="Hardware">
+  <strong>CVE-2026-114938 | OpenJDK AVX-512 VBMI Base64 Decoder Memory Corruption</strong>
 </p>
 
 <p align="center">
-  <a href="#poc">PoC</a> · <a href="#scanner">Scanner</a> · <a href="#detection-rules">Detection</a> · <a href="#quick-start">Lab</a> · <a href="docs/ANALYSIS.md">Analysis</a> · <a href="https://qideng.substack.com/p/java4shell-from-avx-512-integer-underflow">Writeup</a>
+  <img src="https://img.shields.io/badge/CVE-2026--114938-red?style=flat-square" alt="CVE">
+  <img src="https://img.shields.io/badge/CVSS%204.0-9.2%20Critical-darkred?style=flat-square" alt="CVSS">
+  <img src="https://img.shields.io/badge/Platform-Linux-blue?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/Architecture-x86__64-orange?style=flat-square" alt="Architecture">
+  <img src="https://img.shields.io/badge/CPU-AVX--512%20VBMI-blue?style=flat-square" alt="CPU">
+  <img src="https://img.shields.io/badge/Environment-Isolated%20Lab-brightgreen?style=flat-square" alt="Environment">
+</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> ·
+  <a href="#system-requirements">System Requirements</a> ·
+  <a href="#hardware-compatibility">Hardware Compatibility</a> ·
+  <a href="#software-dependencies">Dependencies</a> ·
+  <a href="#lab-architecture">Lab Architecture</a> ·
+  <a href="#reproduction-stages">Reproduction Stages</a> ·
+  <a href="#verification">Verification</a> ·
+  <a href="#limitations">Limitations</a>
 </p>
 
 ---
 
-Memory corruption in OpenJDK HotSpot's AVX-512 VBMI Base64 decoding intrinsic. A malformed 65-byte input (`"A"×64 + "="`) causes an integer underflow in the output mask calculation, producing a full 64-bit write mask. The resulting `VMOVDQU8` writes **62 bytes past the end of the heap buffer**.
+## Overview
 
-Discovered by Quang Luong of Calif.io using AI-assisted vulnerability research. Pre-auth RCE demonstrated against Keycloak, Jira, Confluence, Jenkins, Artifactory, and PingFederate.
+This repository documents a controlled reproduction and investigation of **Java4Shell (CVE-2026-114938)**, a memory-corruption vulnerability in the optimized AVX-512 VBMI Base64 decoder implementation in OpenJDK.
 
-**Author:** [Qi Deng](https://github.com/ikow) &nbsp;|&nbsp; **Writeup:** [Substack](https://qideng.substack.com/p/java4shell-from-avx-512-integer-underflow) &nbsp;|&nbsp; **Date:** 2026-11-17
+The affected decoder implementation can be reached through Java's Base64 decoding functionality on supported x86-64 hardware. Under vulnerable conditions, specially crafted input can cause an out-of-bounds memory write.
 
-## CVE Details
+The vulnerability can potentially result in:
 
-| Field | Value |
-|-------|-------|
-| **CVE** | CVE-2026-114938 |
-| **CVSS v4.0 / v3.1** | 9.2 Critical / 8.1 High |
-| **CWE** | CWE-191 (Integer Underflow) → CWE-122 (Heap Buffer Overflow) |
-| **Component** | `hotspot/compiler` — `StubGenerator::generate_base64_decodeBlock()` |
-| **Fix** | [JDK-8393212](https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b) — 3-line `length < 4` guard |
+- JVM process crashes.
+- Heap memory corruption.
+- Unauthorized memory disclosure.
+- Arbitrary code execution in affected application processes.
 
-## Affected Versions
+This project focuses on understanding the vulnerability, documenting the reproduction environment, examining memory-corruption behaviour, and recording experimental observations.
 
-| JDK | Vulnerable | Fixed |
-|-----|-----------|-------|
-| 17 | 17.0.6 – 17.0.21 | 17.0.21.1 |
-| 21 | All before 21.0.13.1 | 21.0.13.1 |
-| 25 | All before 25.0.5.1 | 25.0.5.1 |
-| 27 | All before 27.0.1.1 | 27.0.1.1 |
+**Research scope:** The repository contains the original community toolkit alongside a separate experimental lab. Results from the lab are documented independently from the original vulnerability advisory.
 
-**Hardware requirement:** x86-64 with AVX-512 VBMI — Intel Ice Lake+ (Xeon 3rd Gen+) or AMD Zen 4+ (EPYC Genoa / Ryzen 7000+). **ARM64 is NOT affected.**
+> Important: A successful shell in a lab is not, by itself, proof that every preceding stage of the vulnerability chain caused that shell. The exact causal relationship must be independently validated.
 
-All OpenJDK-based distributions are vulnerable: Oracle Java SE, Temurin, Corretto, Zulu, Liberica, SapMachine, Red Hat OpenJDK, GraalVM.
+## Vulnerability Information
 
-## Impact
+| Property | Details |
+|---|---|
+| Vulnerability | Java4Shell |
+| CVE | CVE-2026-114938 |
+| Component | OpenJDK HotSpot JVM |
+| Affected functionality | Optimized Base64 decoder |
+| Weakness | Out-of-bounds memory write |
+| CWE | CWE-787 |
+| CPU architecture | x86-64 |
+| Hardware requirement | AVX-512 VBMI support |
+| Public disclosure | 17 November 2026 |
+| Researcher-reported severity | CVSS 4.0: 9.2 Critical |
 
-**Pre-auth RCE (default configs):**
-- Keycloak · Atlassian Jira · Atlassian Confluence · JFrog Artifactory · Jenkins · PingFederate
+Severity scores can differ between vendors and scoring methodologies. Refer to the original advisory and vendor assessments when reporting severity.
 
-**Post-auth RCE:**
-- Apache Kafka Broker · Apache Solr · Elasticsearch · Gerrit · Spinnaker
+## System Requirements
 
-**Attack surface:** Any Java application that decodes untrusted Base64 via `java.util.Base64` — HTTP Basic Auth, JWT tokens, SAML assertions, file uploads, API payloads, TLS (client-side).
+The reproduction environment has four important requirements: compatible CPU hardware, a suitable operating system, an appropriate Java runtime, and a working container environment.
 
-## Root Cause
+### 1. Host hardware
 
-```
-Input: "A"×64 + "="  (65 bytes)
-Buffer: 50 bytes allocated
+| Component | Requirement |
+|---|---|
+| CPU architecture | x86-64 |
+| CPU instruction support | AVX-512 VBMI |
+| Additional CPU flags | AVX-512F, AVX-512BW and BMI2 |
+| RAM | 8 GB minimum; 16 GB recommended |
+| Storage | 20 GB free space recommended |
+| Virtualization | Hardware feature passthrough must be available if using a VM |
 
-Tail handler:
-  output_size = (1 / 4) * 3 = 0
-  output_size -= 1            = -1  (UNDERFLOW)
-  bzhiq(-1, 0xFF)             = 0xFFFFFFFFFFFFFFFF  (all bits set)
-  evmovdqub [dst+48], mask, zmm → writes ALL 64 bytes
-                                → 62 bytes PAST the buffer end
-```
+**Important:** Having an AVX-512-capable processor does not automatically mean the required instruction set is exposed to the operating system or virtual machine.
 
-The `BZHI` instruction treats the index as `unsigned [7:0]`. When `output_size = -1`, the low byte is `0xFF = 255`, which exceeds the 64-bit register width, so no bits are cleared — full mask → full 64-byte write.
+### 2. Operating system
 
-## PoC
+Recommended environment:
 
-The trigger proves the memory corruption is real. It uses a 4096-byte destination array so the overflow stays contained (safe to run).
+- Kali Linux
+- Debian 12 or later
+- Ubuntu 22.04 or later
 
-```bash
-cd poc/
-javac Base64Trigger.java
-java Base64Trigger
-```
+A Linux environment is recommended because the research workflow uses Linux process information, `/proc`, native binaries and Docker containers.
 
-**Vulnerable output:**
-```
-runtime=21.0.13+9-LTS
-vm=OpenJDK 64-Bit Server VM
-rejected=true changed=62 first=50 last=111
-REPRODUCED
-```
+### 3. Java runtime
 
-**Verified on:** GCE `c3-standard-4` (Intel Xeon Platinum 8481C, Sapphire Rapids) + Temurin 21.0.13+9-LTS.
+The lab must use a Java build that actually contains the affected decoder implementation.
 
-### Trigger Strings
+The relevant upstream affected release lines include:
 
-| JDK Version | Input |
-|-------------|-------|
-| 21, 25, 27 | `"A" × 64 + "="` (65 bytes) |
-| 17 (17.0.6+) | `"A" × 128 + "="` (129 bytes) |
+| Java release line | Affected range |
+|---|---|
+| Java 17 | 17.0.6 and later, before the applicable fixed build |
+| Java 21 | Before the applicable fixed build |
+| Java 25 | Before the applicable fixed build |
+| Java 27 | Before the applicable fixed build |
 
-### Full Verification
+Exact affected and fixed builds depend on the Java distribution. Do not assume that every vendor uses identical version numbering.
 
-```bash
-chmod +x poc/verify_corruption.sh
-./poc/verify_corruption.sh
-```
+For a reproducible experiment, record:
 
-Tests the bounded trigger, then checks `-XX:-UseBASE64Intrinsics` in a separate process. Java 17 uses the 128-character variant. A negative test is **not** a safety verdict: inherited JVM options, unavailable intrinsics, or JIT behavior can prevent reproduction. The wrapper requires a matching `javac`, uses a private temporary directory and timeouts, and distinguishes errors from valid test output.
+- Java vendor and distribution.
+- Full Java runtime version.
+- JVM build information.
+- CPU architecture.
+- Enabled Base64 intrinsic configuration.
 
-Exit codes: `1` = corruption reproduced and the mitigation control passed; `2` = skipped, not reproduced, or inconclusive. This does not inspect or change the running application's configuration. Use only on authorized hosts, in a separate unprivileged process; do not use `exploit/` for production verification.
+### 4. Container requirements
 
-## Exploit Chain
+The lab uses an isolated Docker environment.
 
-Staged exploit demonstrating escalation from memory corruption to heap disclosure. Each stage builds on the previous:
+| Component | Requirement |
+|---|---|
+| Docker Engine | Installed |
+| Docker Compose | Recommended |
+| Network | Dedicated isolated Docker network |
+| Containers | Separate attacker and victim environments |
+| Privileges | Avoid privileged containers unless strictly required for a documented experiment |
 
-| Stage | File | Primitive |
-|-------|------|-----------|
-| 1 — Writer | `WriterPrimitive.java` | Corrupt adjacent array length → OOB write |
-| 2 — JavaBleed | `JavaBleed.java` | Extend reader array → heap disclosure |
-| 3 — Feng Shui | `HeapFengShui.java` | G1 TLAB control for reliable placement |
-| 4 — Full Chain | `Java4ShellExploit.java` | WARM→SPRAY→TRIGGER→EXTEND→DISCLOSE→REPAIR |
-| 5 — Remote | `RemoteExploitSim.java` | HTTP Basic Auth attack vector simulation |
+Docker containers share the host kernel and normally see the CPU capabilities exposed by the host. Containerization alone does not provide AVX-512 support if the host or hypervisor does not expose it.
 
-```bash
-cd exploit/
+## Hardware Compatibility
 
-# Run the full chain
-chmod +x run.sh
-./run.sh chain
+The vulnerable optimized decoder path depends on CPU capabilities.
 
-# Or individual stages
-./run.sh writer      # Stage 1: Writer primitive
-./run.sh javableed   # Stage 2: Heap disclosure
-./run.sh fengshui    # Stage 3: Heap layout control
-./run.sh remote      # Stage 5: HTTP attack simulator
-./run.sh all         # Everything
-```
-
-**Exploitation chain (from Calif disclosure):**
-1. **Writer** — 62-byte overflow corrupts adjacent array's length field
-2. **Reader ("JavaBleed")** — Writer extends a second array → read heap past bounds
-3. **Feng Shui** — G1 GC TLAB manipulation places arrays adjacent in memory
-4. **Remote grooming** — TCP ACK timing controls server-side heap allocation order
-5. **Full chain** — WARM → REHEARSE → TRIGGER → DISCLOSE → REPAIR → FINISH
-
-Each target needs a bespoke profile (allocation sizes, GC behavior, auth flow). There is no universal exploit.
-
-## Scanner
-
-### Host Scanner
-
-Checks discoverable Java installations in the visible filesystem for version candidates:
+Check the CPU flags on the Linux host:
 
 ```bash
-chmod +x scanner/java4shell_scan.sh
-./scanner/java4shell_scan.sh
+grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | \
+grep -E '^(avx512f|avx512bw|avx512vbmi|bmi2)$'
 ```
 
-Checks all four required guest CPU flags, full four-component version boundaries, and effective `UseBASE64Intrinsics` values using a matching `jcmd`. Nix store paths and visible process executables are included; additional Java binary paths can be passed as arguments. Run within each relevant container namespace with appropriate permissions. Missing tools, permissions or unrecognized versions produce `UNKNOWN`, not `SAFE`. Process command lines are not printed.
+Expected capabilities:
 
-Version ranges are triage hints, not authoritative vendor patch detection: verify vendor backports separately. Exit codes: `1` = candidates found; `2` = unknown checks with no candidates; `0` = no candidates found or a missing hardware prerequisite. None of these clears undiscovered/container runtimes, and hardware exclusions apply only to current placement. `timeout` and Bash are required; effective process inspection requires `jcmd` attach permissions and may be unavailable.
+```text
+avx512f
+avx512bw
+avx512vbmi
+bmi2
+```
 
-### Network Scanner
-
-Probes remote hosts for vulnerable Java versions via HTTP headers, TLS certs, and service banners:
-
-Network results are **hints only**: `CANDIDATE` or `INCONCLUSIVE`, never a confirmed vulnerability or safety verdict. Application-server versions are not JDK versions. JSON retains `vulnerable` as `null` and adds `candidate` and `assessment`; consumers must not treat `null` or lack of findings as safe. The scanner cannot establish CPU eligibility, vendor backports or live mitigation settings.
+Check the processor architecture:
 
 ```bash
-# Single host
-python3 scanner/java4shell_scan.py --host app.example.com
-
-# CIDR range
-python3 scanner/java4shell_scan.py --cidr 10.0.0.0/24 --ports 8080,8443
-
-# From file
-python3 scanner/java4shell_scan.py --targets hosts.txt --threads 50
-
-# JSON output
-python3 scanner/java4shell_scan.py --host app.example.com --json
+uname -m
 ```
 
-## Offline regression tests
+Expected:
+
+```text
+x86_64
+```
+
+Check CPU information:
 
 ```bash
-python3 -m unittest discover -s tests -v
-bash -n scanner/java4shell_scan.sh poc/verify_corruption.sh
+lscpu
 ```
 
-Tests use synthetic versions, process flags and JVM outcomes; they do not contact target hosts or execute the corruption trigger.
+**Hardware compatibility notes:**
 
-## Detection Rules
+- AVX-512 VBMI is a required capability for the affected optimized decoder path.
+- ARM64 systems do not execute this x86-64 AVX-512 implementation.
+- Some virtual machines hide AVX-512 CPU features.
+- Cloud instances may expose different CPU capabilities depending on the instance family and host configuration.
 
-Pre-built IDS / WAF / SIEM rules in [`detection/`](detection/):
+A missing CPU flag means the corresponding optimized execution path is not available in that environment.
 
-| File | Format | Signatures |
-|------|--------|-----------|
-| `java4shell.rules` | Suricata / Snort | 6 rules — malformed Base64, trigger patterns, warm-up, crash indicators |
-| `java4shell.yaml` | Sigma | 5 rules — web logs, JVM crashes, GC SIGSEGV, exception floods |
-| `modsecurity.conf` | ModSecurity v2/v3 | 6 rules — drop-in for Apache/Nginx |
+## Software Dependencies
 
-**Key detection signals:**
-- Malformed Base64 padding in `Authorization: Basic` headers (length % 4 ≠ 0)
-- Exact trigger patterns (`"A"×64 + "="` or `"A"×128 + "="`)
-- High-frequency Base64 auth requests from single source (JIT warm-up phase)
-- `IllegalArgumentException` from Base64 decoder (thrown after corruption)
-- `hs_err_pid*.log` crash files with `SIGSEGV` in G1 GC / `StubRoutines`
+### Required packages
 
-## Quick Start
+For Debian and Kali Linux:
 
 ```bash
-git clone https://github.com/ikow/java4shell-poc.git && cd java4shell-poc
+sudo apt update
 
-# Start the lab (requires x86-64 Docker host with AVX-512 VBMI)
-cd lab && chmod +x setup.sh && ./setup.sh
-
-# Enter the container and run the PoC
-docker compose exec poc bash
-java Base64Trigger
-
-# Or run directly (if Java is installed locally)
-cd poc && javac Base64Trigger.java && java Base64Trigger
-
-# Scan your hosts
-./scanner/java4shell_scan.sh
+sudo apt install -y \
+    git \
+    curl \
+    wget \
+    build-essential \
+    binutils \
+    netcat-openbsd \
+    docker.io \
+    docker-compose-v2 \
+    procps \
+    file \
+    strace \
+    gdb
 ```
 
-## Downstream Target Exploits
-
-Target-specific exploit chains for real-world applications. Each module implements:
-reconnaissance → multi-threaded JIT warmup → heap grooming → trigger → JavaBleed detection.
-
-| Target | Vector | Grooming Strategy |
-|--------|--------|-------------------|
-| **Keycloak 26.x** | Token endpoint Basic Auth | `client_id` size variation → TLAB layout control |
-| **Jenkins LTS** | Any API endpoint Basic Auth | Multi-endpoint rotation, `tree` depth, Cookie spray |
-| **Spring Boot 3.x** | `BasicAuthenticationFilter` | Tomcat `ByteChunk` header-size sweep |
-| **Elasticsearch 8.x** | X-Pack `SecurityHttpFilter` | `_bulk` / `_search` / `_cat` allocation patterns |
+Optional documentation dependency:
 
 ```bash
-cd exploit/downstream/
-
-# All targets (against Docker Compose lab)
-python3 exploit_all.py --target all
-
-# Single target with custom URL
-python3 exploit_all.py --target keycloak --url http://keycloak:8080 --warmup 10000
-
-# Via runner script
-chmod +x run.sh
-./run.sh docker          # Against local Docker lab
-./run.sh keycloak        # Single target
-./run.sh remote keycloak https://keycloak.internal:8443
+sudo apt install -y poppler-utils
 ```
+
+`poppler-utils` is only needed when working with PDF documentation.
+
+### Docker configuration
+
+Start Docker:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+Check Docker:
+
+```bash
+docker --version
+docker compose version
+```
+
+Check daemon connectivity:
+
+```bash
+sudo docker info
+```
+
+Optional non-root Docker access:
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+Log out and log in again after changing group membership.
+
+> Security warning: Membership in the Docker group effectively grants root-level control over the host. Use this only on a dedicated research machine.
+
+### Java installation and verification
+
+Install a suitable JDK distribution separately, selecting the exact build required for the experiment.
+
+Verify the runtime:
+
+```bash
+java -version
+```
+
+Verify the compiler:
+
+```bash
+javac -version
+```
+
+Record the Java runtime properties:
+
+```bash
+java -XshowSettings:properties -version 2>&1
+```
+
+The runtime version alone does not establish vulnerability. CPU compatibility and the actual decoder implementation must also be verified.
+
+## Lab Architecture
+
+The reproduction environment uses two separate containers connected through a dedicated Docker network.
+
+| Component | Responsibility |
+|---|---|
+| Attacker container | Research client and test harness |
+| Victim container | Java application and decoder test environment |
+| Docker network | Controlled communication between containers |
+| Host system | Provides CPU capabilities and container runtime |
+
+The purpose of this separation is to distinguish the remote application environment from the testing environment and to make observations easier to reproduce.
 
 ## Repository Structure
 
-```
-java4shell-poc/
-├── poc/                             # Proof of Concept
-│   ├── Base64Trigger.java           #   Memory corruption trigger
-│   ├── verify_corruption.sh         #   Full verification + mitigation tests
-│   └── run.sh                       #   Quick compile-and-run helper
-├── exploit/                         # Exploit Chain
-│   ├── WriterPrimitive.java         #   Stage 1: Array length corruption → OOB write
-│   ├── JavaBleed.java               #   Stage 2: Heap disclosure via extended reader
-│   ├── HeapFengShui.java            #   Stage 3: G1 TLAB heap layout control
-│   ├── Java4ShellExploit.java       #   Stage 4: Full 7-phase exploit chain
-│   ├── RemoteExploitSim.java        #   Stage 5: HTTP Basic Auth attack simulator
-│   ├── run.sh                       #   Stage runner
-│   ├── downstream/                  #   Target-specific exploit chains
-│   │   ├── framework.py             #     Shared infrastructure (HTTP, analysis, grooming)
-│   │   ├── keycloak_exploit.py      #     Keycloak 26.x
-│   │   ├── jenkins_exploit.py       #     Jenkins LTS
-│   │   ├── springboot_exploit.py    #     Spring Boot 3.x
-│   │   ├── elasticsearch_exploit.py #     Elasticsearch 8.x
-│   │   └── exploit_all.py           #     Unified runner
-│   └── targets/                     #   Docker Compose target lab
-│       ├── docker-compose.yml       #     Keycloak + Jenkins + ES + Spring Boot
-│       ├── attacker/                #     Python exploit script
-│       └── springboot/              #     Custom Spring Boot target app
-├── scanner/                         # Scanners
-│   ├── java4shell_scan.sh           #   Host scanner (JDK + CPU flags)
-│   └── java4shell_scan.py           #   Network scanner (HTTP/TLS/banner)
-├── detection/                       # Detection Rules
-│   ├── java4shell.rules             #   Suricata / Snort
-│   ├── java4shell.yaml              #   Sigma
-│   └── modsecurity.conf             #   ModSecurity
-├── lab/                             # Lab Environment
-│   ├── Dockerfile                   #   Vulnerable JDK container
-│   ├── docker-compose.yml           #   Lab setup
-│   └── setup.sh                     #   One-click launcher
-├── tests/                           # Offline regression tests
-├── docs/                            # Documentation
-│   ├── ANALYSIS.md                  #   Full technical analysis
-│   ├── substack_article_v2.md       #   Published Substack writeup
-│   └── cover.png                    #   Cover art
-└── README.md
+```text
+java4shell/
+│
+├── poc/                 # Original proof-of-concept material
+├── exploit/             # Original exploit-related material
+├── scanner/             # Detection and scanning utilities
+├── detection/           # Detection resources
+├── docs/                # Research documentation
+│
+├── lab/                 # Independent reproduction environment
+│   ├── attacker/        # Attacker-side test environment
+│   ├── victim/          # Java victim environment
+│   ├── docker/          # Container configuration
+│   └── evidence/        # Experiment logs and observations
+│
+├── java4shell-reproduction.md
+├── README.md
+└── LICENSE
 ```
 
-## The Patch
+Directory names describe the intended organization. The actual repository should be updated to match the files that are present.
 
-[JDK-8393212](https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b) — committed 2026-11-16, titled "Base64 optimization improvements":
+## Reproduction Stages
 
-```diff
- __ BIND(L_finalBit);
- // Now have 1 to 63 bytes left to decode
-+// A padded Base64 tail shorter than one complete block is handled by Java.
-+__ cmpl(length, 4);
-+__ jcc(Assembler::less, L_bruteForce);
-```
+The research investigation is organized into separate stages so that each observation can be assessed independently.
 
-Routes tails shorter than 4 bytes to the safe scalar decoder before the BZHI underflow can occur.
+| Stage | Research activity | Evidence to record |
+|---|---|---|
+| 01 | Environment validation | OS, CPU, Docker and Java versions |
+| 02 | Hardware compatibility | CPU architecture and instruction flags |
+| 03 | Decoder investigation | Java Base64 decoder behaviour |
+| 04 | Memory-corruption observation | Crash logs and controlled test output |
+| 05 | Memory behaviour analysis | Address and memory observations |
+| 06 | Application-level testing | HTTP request and response records |
+| 07 | Execution analysis | Process identity and execution evidence |
+| 08 | Negative controls | Results with incompatible hardware or mitigations |
 
-## Mitigation
+Each stage should have its own logs and reproducible test record. A result from one stage should not automatically be treated as proof of the next stage.
 
-**Upgrade Java immediately** to 17.0.21.1 / 21.0.13.1 / 25.0.5.1 / 27.0.1.1.
+## Verification and Evidence
 
-```bash
-# Interim — disable Base64 intrinsic (recommended, narrow impact)
-java -XX:-UseBASE64Intrinsics MyApp
+For every experiment, preserve:
 
-# Interim — disable AVX-512 entirely (x86-64 only — do NOT use on ARM)
-java -XX:UseAVX=2 MyApp
+- Complete command and configuration.
+- Java runtime and vendor details.
+- CPU flags and architecture.
+- Container image identifiers.
+- Application logs.
+- JVM crash logs, if generated.
+- Process identity and privilege information.
+- Successful and unsuccessful test cases.
+- Negative-control results.
 
-# Fleet-wide via environment variable
-export JAVA_TOOL_OPTIONS="-XX:-UseBASE64Intrinsics"
-```
+### Negative controls
 
-After upgrading: restart all JVM processes, rebuild container images.
+Useful controls include:
 
-## Comparison
+1. Testing on a CPU without AVX-512 VBMI support.
+2. Testing with the relevant JVM intrinsic disabled.
+3. Comparing affected and patched Java builds.
+4. Comparing decoder behaviour across supported Java distributions.
+5. Confirming whether the application actually reaches the relevant Base64 decoder.
 
-| | Heartbleed | Log4Shell | Spring4Shell | **Java4Shell** |
-|---|---|---|---|---|
-| **Bug class** | Over-read | Injection | Class manipulation | Integer underflow → heap overflow |
-| **Trigger** | TLS heartbeat | `${jndi:…}` | HTTP params | `"A"×64 + "="` |
-| **Exploitation** | Trivial | Trivial | Moderate | Complex (heap feng shui) |
-| **Universal** | Yes | Yes | Partial | No (per-target + HW-gated) |
-| **CVSS** | 7.5 | 10.0 | 9.8 | 9.2 |
+Negative controls help establish whether the observed result depends on the vulnerability rather than another component of the test harness.
+
+## Security Considerations
+
+This repository is intended for authorized research in isolated environments.
+
+- Do not run experimental tests against systems without explicit permission.
+- Do not expose the victim container or its test endpoints to public networks.
+- Use disposable containers and test data.
+- Avoid storing production credentials or secrets in experiment logs.
+- Treat crash logs and memory dumps as potentially sensitive.
+- Keep the vulnerable runtime isolated from normal workloads.
+
+## Limitations
+
+This project distinguishes between the published vulnerability and the results of the independent lab.
+
+The following claims require separate supporting evidence:
+
+- That the Base64 decoder caused the observed memory corruption.
+- That the corruption provided the specific memory disclosure or write primitive claimed.
+- That the resulting control-flow change was caused by the decoder flaw.
+- That remote code execution was achieved through the vulnerable decoder rather than another test mechanism.
+
+A root shell observed in a container establishes the shell's reported identity and privileges. It does not independently establish the vulnerability's complete exploit chain.
+
+<img width="1280" height="720" alt="conve" src="https://github.com/user-attachments/assets/03310df6-b27d-4bdc-8118-6a00b2e06b41" />
 
 ## References
 
-- [Exploitation deep dive](https://qideng.substack.com/p/java4shell-from-avx-512-integer-underflow) — Full exploit chain, downstream testing, heap grooming
-- [OpenJDK advisory](https://openjdk.org/groups/vulnerability/advisories/2026-11-17)
-- [Oracle CPU](https://www.oracle.com/security-alerts/cspunov2026.html)
-- [Fix commit 5177a70b385c](https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b)
-- [Datadog Security Labs analysis](https://securitylabs.datadoghq.com/articles/java4shell-remote-code-execution-in-openjdk-cve-2026-114938/)
-- [JFrog analysis](https://research.jfrog.com/post/java4shell-vulnerability/)
-- [Upwind / java4shell.net](https://java4shell.net/)
+- Calif — Original Java4Shell research and advisory: https://calif.io/java4shell/
+- OpenJDK security advisories: https://openjdk.org/groups/vulnerability/advisories/
+- Red Hat CVE-2026-114938: https://access.redhat.com/security/cve/cve-2026-114938
+- Sophos security advisory: https://www.sophos.com/en-us/security-advisories/sophos-sa-20261118-java4shell
+
+## Disclaimer
+
+This repository is intended for educational purposes, vulnerability research and authorized security testing only.
+
+The original vulnerability and the independent experiments documented here are distinct. No claim of independent vulnerability discovery, universal exploitability or successful end-to-end exploitation should be inferred without supporting evidence.
+
+---
+
+<p align="center">
+  <strong>Java4Shell — OpenJDK Security Research</strong>
+</p>
