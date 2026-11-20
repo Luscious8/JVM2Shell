@@ -4,7 +4,6 @@
   <strong>CVE-2026-114938 — OpenJDK AVX-512 Base64 Heap Overflow PoC & Detection Toolkit</strong>
 </p>
 <p align="center">
-  <a href="https://github.com/ikow/java4shell-poc/stargazers"><img src="https://img.shields.io/github/stars/ikow/java4shell-poc?style=flat-square" alt="Stars"></a>
   <img src="https://img.shields.io/badge/CVSS-9.2%20Critical-red?style=flat-square" alt="CVSS 9.2">
   <img src="https://img.shields.io/badge/JDK-17.0.6%E2%80%9327-orange?style=flat-square" alt="Affected Versions">
   <img src="https://img.shields.io/badge/Fixed-17.0.21.1%20%7C%2021.0.13.1%20%7C%2025.0.5.1%20%7C%2027.0.1.1-green?style=flat-square" alt="Fixed Versions">
