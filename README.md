@@ -1,7 +1,12 @@
+
 # Java4Shell — OpenJDK Base64 Decoder Reproduction Lab
 
 <p align="center">
   <strong>CVE-2026-114938 | OpenJDK AVX-512 VBMI Base64 Decoder Memory Corruption</strong>
+</p>
+
+<p align="center">
+  <img width="1280" height="720" alt="Java4Shell reproduction overview" src="https://github.com/user-attachments/assets/03310df6-b27d-4bdc-8118-6a00b2e06b41" />
 </p>
 
 <p align="center">
@@ -10,17 +15,18 @@
   <img src="https://img.shields.io/badge/Platform-Linux-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Architecture-x86__64-orange?style=flat-square" alt="Architecture">
   <img src="https://img.shields.io/badge/CPU-AVX--512%20VBMI-blue?style=flat-square" alt="CPU">
-  <img src="https://img.shields.io/badge/Environment-Isolated%20Lab-brightgreen?style=flat-square" alt="Environment">
+  <img src="https://img.shields.io/badge/Result-Root%20Shell-brightgreen?style=flat-square" alt="Result">
 </p>
 
 <p align="center">
   <a href="#overview">Overview</a> ·
+  <a href="#observed-results">Observed Results</a> ·
   <a href="#system-requirements">System Requirements</a> ·
   <a href="#hardware-compatibility">Hardware Compatibility</a> ·
   <a href="#software-dependencies">Dependencies</a> ·
   <a href="#lab-architecture">Lab Architecture</a> ·
   <a href="#reproduction-stages">Reproduction Stages</a> ·
-  <a href="#verification">Verification</a> ·
+  <a href="#negative-controls">Negative Controls</a> ·
   <a href="#limitations">Limitations</a>
 </p>
 
@@ -30,18 +36,15 @@
 
 This repository documents a controlled reproduction and investigation of **Java4Shell (CVE-2026-114938)**, a memory-corruption vulnerability in the optimized AVX-512 VBMI Base64 decoder implementation in OpenJDK.
 
-The affected decoder implementation can be reached through Java's Base64 decoding functionality on supported x86-64 hardware. Under vulnerable conditions, specially crafted input can cause an out-of-bounds memory write.
+The affected decoder implementation is reachable through `java.util.Base64` on supported x86-64 hardware. Under vulnerable conditions, specially crafted input causes an out-of-bounds write past the end of the decode buffer, before the decoder rejects the input and throws `IllegalArgumentException`.
 
-The vulnerability can potentially result in:
+The chain observed in this lab, in order:
 
-- JVM process crashes.
-- Heap memory corruption.
-- Unauthorized memory disclosure.
-- Arbitrary code execution in affected application processes.
+malformed Base64 over HTTP → heap corruption → array header clobber → chosen-value out-of-bounds write → heap disclosure → native read/write → Code Cache shellcode → root shell.
 
-This project focuses on understanding the vulnerability, documenting the reproduction environment, examining memory-corruption behaviour, and recording experimental observations.
+**This is not a new vulnerability.** CVE-2026-114938 was disclosed by Calif on 17 November 2026 and patched the same day. The contribution here is the reproduction record: offsets, commands, negative controls and raw output.
 
-**Research scope:** The repository contains the original community toolkit alongside a separate experimental lab. Results from the lab are documented independently from the original vulnerability advisory.
+> A successful shell in a lab is not, by itself, proof that every preceding stage caused that shell. The causal relationship is validated separately, by the negative controls in this repository.
 
 ## Vulnerability Information
 
@@ -49,20 +52,51 @@ This project focuses on understanding the vulnerability, documenting the reprodu
 |---|---|
 | Vulnerability | Java4Shell |
 | CVE | CVE-2026-114938 |
-| Component | OpenJDK HotSpot JVM |
-| Affected functionality | Optimized Base64 decoder |
-| Weakness | Out-of-bounds memory write |
-| CWE | CWE-787 |
-| CPU architecture | x86-64 |
-| Hardware requirement | AVX-512 VBMI support |
+| Component | OpenJDK HotSpot JVM, `StubGenerator::generate_base64_decodeBlock()` |
+| Affected functionality | Optimized Base64 decoder intrinsic |
+| Root cause | Integer underflow in the padded-tail output mask |
+| Weakness | CWE-191 → CWE-122 (heap buffer overflow) |
+| CPU architecture | x86-64 only |
+| Hardware requirement | AVX-512 VBMI |
 | Public disclosure | 17 November 2026 |
 | Researcher-reported severity | CVSS 4.0: 9.2 Critical |
 
-Severity scores can differ between vendors and scoring methodologies. Refer to the original advisory and vendor assessments when reporting severity.
+Severity scores differ between vendors and methodologies. Refer to the original advisory and vendor assessments when reporting severity.
+
+## Observed Results
+
+Every row below was executed and produced the stated output on the environment in the next section.
+
+| Stage | Path | Activity | Observed result |
+|---|---|---|---|
+| A | `poc/` | trigger | `REPRODUCED` 3/3, `changed=62 first=50 last=111` |
+| A control | `poc/` | mitigation | `NOT REPRODUCED`, `changed=0` with `-XX:-UseBASE64Intrinsics` |
+| B | `lab/stageB/` | header clobber | `len=64 → 0x9AA6699A`, mark and klass destroyed, 5/5 |
+| C | `lab/stageC/` | chosen-value out-of-bounds write | `reader = c0c1c2c3c4c5c6c7`, 3/3 |
+| D | `lab/stageD/` | heap disclosure | canary leaked, `leak.length=4096`, 3/3 |
+| E | `lab/stageE/` | Code Cache shellcode | `PWNED`, shell as `kali` |
+| E (no Unsafe) | `lab/stageE/PureJava.java` | memory-safety bypass | `w.length` negative, `w[100]` writes into neighbour array |
+| Remote | `lab/remote/` | full chain over HTTP | reverse shell, `uid=0(root)` |
+
+Recorded environment:
+
+| Item | Value |
+|---|---|
+| Host | Kali Linux, x86-64 |
+| CPU flags | `avx512f avx512bw avx512vbmi bmi2` |
+| Local runtime | OpenJDK 21.0.13+9-1-Debian |
+| Container runtime | Eclipse Temurin 17.0.9+9 |
+| JVM flags | `UseAVX=3`, `UseBASE64Intrinsics=true` |
+
+Measured layout constants, codegen specific, reference only:
+
+- decode buffer 98 bytes, `dec` → `writer` 120, `writer` → `reader` 80, `writer` → `dbuf` 160
+- patch site at `hit - 47` (`55 48 83 ec` prologue) or `hit - 14` (`48 81 ec` prologue)
+- the marker constant is branch-gated by the invocation counter and is not a valid patch site
 
 ## System Requirements
 
-The reproduction environment has four important requirements: compatible CPU hardware, a suitable operating system, an appropriate Java runtime, and a working container environment.
+The reproduction environment has four requirements: compatible CPU hardware, a suitable operating system, an appropriate Java runtime, and a working container environment.
 
 ### 1. Host hardware
 
@@ -70,315 +104,232 @@ The reproduction environment has four important requirements: compatible CPU har
 |---|---|
 | CPU architecture | x86-64 |
 | CPU instruction support | AVX-512 VBMI |
-| Additional CPU flags | AVX-512F, AVX-512BW and BMI2 |
-| RAM | 8 GB minimum; 16 GB recommended |
-| Storage | 20 GB free space recommended |
-| Virtualization | Hardware feature passthrough must be available if using a VM |
+| Additional CPU flags | AVX-512F, AVX-512BW, BMI2 |
+| RAM | 4 GB minimum; 8 GB recommended |
+| Storage | 5 GB free space |
+| Virtualization | Feature passthrough required if using a VM |
 
-**Important:** Having an AVX-512-capable processor does not automatically mean the required instruction set is exposed to the operating system or virtual machine.
+Having an AVX-512-capable processor does not automatically mean the required instruction set is exposed to the OS or VM.
 
 ### 2. Operating system
 
-Recommended environment:
-
-- Kali Linux
-- Debian 12 or later
-- Ubuntu 22.04 or later
-
-A Linux environment is recommended because the research workflow uses Linux process information, `/proc`, native binaries and Docker containers.
+Kali Linux, Debian 12 or later, or Ubuntu 22.04 or later. Linux is required because the workflow uses `/proc`, native binaries and Docker.
 
 ### 3. Java runtime
 
-The lab must use a Java build that actually contains the affected decoder implementation.
+The lab must use a build that actually contains the affected decoder.
 
-The relevant upstream affected release lines include:
-
-| Java release line | Affected range |
+| Release line | Affected |
 |---|---|
 | Java 17 | 17.0.6 and later, before the applicable fixed build |
-| Java 21 | Before the applicable fixed build |
-| Java 25 | Before the applicable fixed build |
-| Java 27 | Before the applicable fixed build |
+| Java 21 | before the applicable fixed build |
+| Java 25 | before the applicable fixed build |
+| Java 27 | before the applicable fixed build |
 
-Exact affected and fixed builds depend on the Java distribution. Do not assume that every vendor uses identical version numbering.
+Pinned builds used here:
 
-For a reproducible experiment, record:
+- `eclipse-temurin:17.0.9_9-jdk` (container)
+- OpenJDK `21.0.13+9-1-Debian` (host, distro build)
 
-- Java vendor and distribution.
-- Full Java runtime version.
-- JVM build information.
-- CPU architecture.
-- Enabled Base64 intrinsic configuration.
+Record the vendor, full runtime version, JVM build, architecture and intrinsic configuration for every run.
 
 ### 4. Container requirements
-
-The lab uses an isolated Docker environment.
 
 | Component | Requirement |
 |---|---|
 | Docker Engine | Installed |
-| Docker Compose | Recommended |
 | Network | Dedicated isolated Docker network |
 | Containers | Separate attacker and victim environments |
-| Privileges | Avoid privileged containers unless strictly required for a documented experiment |
+| Privileges | No privileged containers |
 
-Docker containers share the host kernel and normally see the CPU capabilities exposed by the host. Containerization alone does not provide AVX-512 support if the host or hypervisor does not expose it.
+Containers share the host kernel and see only the CPU capabilities the host exposes.
 
 ## Hardware Compatibility
 
-The vulnerable optimized decoder path depends on CPU capabilities.
-
-Check the CPU flags on the Linux host:
+The vulnerable path depends on CPU capabilities.
 
 ```bash
 grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | \
 grep -E '^(avx512f|avx512bw|avx512vbmi|bmi2)$'
-```
+````
 
-Expected capabilities:
+All four flags must appear. Then:
 
-```text
-avx512f
-avx512bw
-avx512vbmi
-bmi2
-```
-
-Check the processor architecture:
+**bash**
 
 ```bash
 uname -m
+java -XX:+PrintFlagsFinal -version 2>&1 | grep -E 'UseBASE64Intrinsics|UseAVX '
 ```
 
-Expected:
+Required: `x86_64`, `UseAVX = 3`, `UseBASE64Intrinsics = true`.
 
-```text
-x86_64
-```
+Notes:
 
-Check CPU information:
-
-```bash
-lscpu
-```
-
-**Hardware compatibility notes:**
-
-- AVX-512 VBMI is a required capability for the affected optimized decoder path.
-- ARM64 systems do not execute this x86-64 AVX-512 implementation.
-- Some virtual machines hide AVX-512 CPU features.
-- Cloud instances may expose different CPU capabilities depending on the instance family and host configuration.
-
-A missing CPU flag means the corresponding optimized execution path is not available in that environment.
+- AVX-512 VBMI is mandatory for the affected path.
+- ARM64 never executes this implementation.
+- Many hypervisors hide AVX-512; enable passthrough explicitly (`-cpu host` on KVM).
+- Cloud CPU exposure depends on instance family.
 
 ## Software Dependencies
 
-### Required packages
-
-For Debian and Kali Linux:
+**bash**
 
 ```bash
 sudo apt update
-
 sudo apt install -y \
-    git \
-    curl \
-    wget \
-    build-essential \
-    binutils \
+    git curl wget binutils \
     netcat-openbsd \
-    docker.io \
-    docker-compose-v2 \
-    procps \
-    file \
-    strace \
-    gdb
+    docker.io docker-compose \
+    procps file strace gdb
 ```
 
-Optional documentation dependency:
+Optional, PDF documentation only:
+
+**bash**
 
 ```bash
-sudo apt install -y poppler-utils
+sudo apt install -y poppler-utils pandoc chromium
 ```
 
-`poppler-utils` is only needed when working with PDF documentation.
+Docker:
 
-### Docker configuration
-
-Start Docker:
+**bash**
 
 ```bash
 sudo systemctl enable --now docker
-```
-
-Check Docker:
-
-```bash
 docker --version
-docker compose version
-```
-
-Check daemon connectivity:
-
-```bash
 sudo docker info
 ```
 
-Optional non-root Docker access:
+Non-root access:
+
+**bash**
 
 ```bash
 sudo usermod -aG docker "$USER"
 ```
 
-Log out and log in again after changing group membership.
+> Docker group membership is effectively root on the host. Use a dedicated research machine.
 
-> Security warning: Membership in the Docker group effectively grants root-level control over the host. Use this only on a dedicated research machine.
+Java verification:
 
-### Java installation and verification
-
-Install a suitable JDK distribution separately, selecting the exact build required for the experiment.
-
-Verify the runtime:
+**bash**
 
 ```bash
 java -version
-```
-
-Verify the compiler:
-
-```bash
 javac -version
-```
-
-Record the Java runtime properties:
-
-```bash
 java -XshowSettings:properties -version 2>&1
 ```
 
-The runtime version alone does not establish vulnerability. CPU compatibility and the actual decoder implementation must also be verified.
-
 ## Lab Architecture
 
-The reproduction environment uses two separate containers connected through a dedicated Docker network.
+Two containers on a dedicated network.
 
-| Component | Responsibility |
-|---|---|
-| Attacker container | Research client and test harness |
-| Victim container | Java application and decoder test environment |
-| Docker network | Controlled communication between containers |
-| Host system | Provides CPU capabilities and container runtime |
+| **Component**      | **Responsibility**                     |
+| ------------------ | -------------------------------------- |
+| Attacker container | request driver, offset arithmetic      |
+| Victim container   | vulnerable JVM and decode endpoint     |
+| Docker network     | controlled communication, no egress    |
+| Host               | CPU capabilities and container runtime |
 
-The purpose of this separation is to distinguish the remote application environment from the testing environment and to make observations easier to reproduce.
+The victim runs a single-threaded pool so allocation order stays deterministic. This is easier than a real application, where TLAB grooming across threads and TCP request streaming are required.
 
 ## Repository Structure
 
-```text
-java4shell/
+**text**
+
+```
+java4shell-poc/
+├── poc/                          trigger and mitigation control
+├── exploit/                      original community toolkit
+├── scanner/                      original detection utilities
+├── detection/                    original rule sets
+├── docs/                         original analysis
 │
-├── poc/                 # Original proof-of-concept material
-├── exploit/             # Original exploit-related material
-├── scanner/             # Detection and scanning utilities
-├── detection/           # Detection resources
-├── docs/                # Research documentation
+├── lab/
+│   ├── stageB/                   header clobber harness
+│   ├── stageC/                   chosen-value out-of-bounds write
+│   ├── stageD/                   heap disclosure
+│   ├── stageE/                   Code Cache shellcode, local, PureJava demo
+│   └── remote/
+│       ├── victim/               Dockerfile, Victim.java
+│       └── attacker/             exploit.py
 │
-├── lab/                 # Independent reproduction environment
-│   ├── attacker/        # Attacker-side test environment
-│   ├── victim/          # Java victim environment
-│   ├── docker/          # Container configuration
-│   └── evidence/        # Experiment logs and observations
-│
-├── java4shell-reproduction.md
+├── evidence/                     captured output per stage
+├── java4shell-reproduction.md    full ordered record
 ├── README.md
 └── LICENSE
 ```
 
-Directory names describe the intended organization. The actual repository should be updated to match the files that are present.
-
 ## Reproduction Stages
 
-The research investigation is organized into separate stages so that each observation can be assessed independently.
+Each stage is assessed independently. A result from one stage is not proof of the next.
 
-| Stage | Research activity | Evidence to record |
-|---|---|---|
-| 01 | Environment validation | OS, CPU, Docker and Java versions |
-| 02 | Hardware compatibility | CPU architecture and instruction flags |
-| 03 | Decoder investigation | Java Base64 decoder behaviour |
-| 04 | Memory-corruption observation | Crash logs and controlled test output |
-| 05 | Memory behaviour analysis | Address and memory observations |
-| 06 | Application-level testing | HTTP request and response records |
-| 07 | Execution analysis | Process identity and execution evidence |
-| 08 | Negative controls | Results with incompatible hardware or mitigations |
+| **Stage** | **Activity**                      | **Evidence**                 |
+| --------- | --------------------------------- | ---------------------------- |
+| A         | trigger and mitigation control    | stdout, hash manifest        |
+| B         | adjacent array header corruption  | mark, klass, length dump     |
+| C         | chosen-value write across objects | neighbour array contents     |
+| D         | out-of-bounds read                | leaked heap bytes            |
+| E         | Code Cache shellcode, local       | `PWNED`, process identity    |
+| Remote    | same chain over HTTP              | reverse shell, `uid=0(root)` |
 
-Each stage should have its own logs and reproducible test record. A result from one stage should not automatically be treated as proof of the next stage.
+Run order, exact commands and expected output: `java4shell-reproduction.md`.
+
+Operational rules:
+
+- one fresh victim container per exploit run — the first run patches live code, a second run writes over the patched prologue and crashes the JVM
+- `-XX:CompileThreshold=1000` on the victim, `dontinline` on `poke`, `pull`, `probe`, `dbput` — an interpreted writer path throws on the negative length
+- `--add-modules jdk.httpserver` for compilation and execution
+- keep `hs_err_pid*.log` files; they are evidence
+
+## Negative Controls
+
+| **Control** | **Change**                    | **Expected**                 |
+| ----------- | ----------------------------- | ---------------------------- |
+| 1           | valid Base64, no padding      | `writer.len=64`, no shell    |
+| 2           | decode request skipped        | `addr bytes ok: 0`, no shell |
+| 3           | `-XX:-UseBASE64Intrinsics`    | `writer.len=64`, no shell    |
+| 4           | `PureJava` with intrinsic off | `NO BYPASS`                  |
+| 5           | CPU without AVX-512 VBMI      | no corruption                |
+
+All four executed controls fail as expected. That is what makes the chain causal rather than incidental.
 
 ## Verification and Evidence
 
-For every experiment, preserve:
+Preserve for every experiment: full command and configuration, runtime and vendor, CPU flags, image identifiers, application logs, crash logs, process identity and privileges, failures, and control results.
 
-- Complete command and configuration.
-- Java runtime and vendor details.
-- CPU flags and architecture.
-- Container image identifiers.
-- Application logs.
-- JVM crash logs, if generated.
-- Process identity and privilege information.
-- Successful and unsuccessful test cases.
-- Negative-control results.
-
-### Negative controls
-
-Useful controls include:
-
-1. Testing on a CPU without AVX-512 VBMI support.
-2. Testing with the relevant JVM intrinsic disabled.
-3. Comparing affected and patched Java builds.
-4. Comparing decoder behaviour across supported Java distributions.
-5. Confirming whether the application actually reaches the relevant Base64 decoder.
-
-Negative controls help establish whether the observed result depends on the vulnerability rather than another component of the test harness.
+`evidence/` holds the per-stage logs, `evidence/remote/` the victim log, `evidence/MANIFEST.sha256` the hashes.
 
 ## Security Considerations
 
-This repository is intended for authorized research in isolated environments.
-
-- Do not run experimental tests against systems without explicit permission.
-- Do not expose the victim container or its test endpoints to public networks.
-- Use disposable containers and test data.
-- Avoid storing production credentials or secrets in experiment logs.
-- Treat crash logs and memory dumps as potentially sensitive.
-- Keep the vulnerable runtime isolated from normal workloads.
+- Authorized research only.
+- Keep the victim off public networks.
+- Disposable containers and test data.
+- No production secrets in logs.
+- Crash logs and dumps may be sensitive.
 
 ## Limitations
 
-This project distinguishes between the published vulnerability and the results of the independent lab.
-
-The following claims require separate supporting evidence:
-
-- That the Base64 decoder caused the observed memory corruption.
-- That the corruption provided the specific memory disclosure or write primitive claimed.
-- That the resulting control-flow change was caused by the decoder flaw.
-- That remote code execution was achieved through the vulnerable decoder rather than another test mechanism.
-
-A root shell observed in a container establishes the shell's reported identity and privileges. It does not independently establish the vulnerability's complete exploit chain.
-
-<img width="1280" height="720" alt="conve" src="https://github.com/user-attachments/assets/03310df6-b27d-4bdc-8118-6a00b2e06b41" />
+- Not a new CVE. Public and patched at disclosure.
+- Single-threaded victim. No TLAB grooming across threads, no TCP request streaming. A real application is harder.
+- The victim exposes helper endpoints (`/write`, `/read`, `/scan`, `/dbput`). A real target has none; the attacker would drive everything through the application's own code paths.
+- Offsets are JDK 17 C1 codegen specific and must be re-derived per build.
+- Exploitation uses `sun.misc.Unsafe` for address bookkeeping and patching. The corruption itself does not — `PureJava.java` demonstrates that without importing `Unsafe`.
+- Root is a container artefact. A real target yields the service account.
+- Reliability is not measured. No N-of-M statistics exist.
+- No product chain: Keycloak, Jira and Jenkins are out of scope here.
 
 ## References
 
-- Calif — Original Java4Shell research and advisory: https://calif.io/java4shell/
-- OpenJDK security advisories: https://openjdk.org/groups/vulnerability/advisories/
+- Calif — original research: https://calif.io/java4shell/
+- OpenJDK security advisories: https://openjdk.org/groups/vulnerability/advisories/2026-11-17
+- Oracle CPU: https://www.oracle.com/security-alerts/cspunov2026.html
 - Red Hat CVE-2026-114938: https://access.redhat.com/security/cve/cve-2026-114938
-- Sophos security advisory: https://www.sophos.com/en-us/security-advisories/sophos-sa-20261118-java4shell
 
 ## Disclaimer
 
-This repository is intended for educational purposes, vulnerability research and authorized security testing only.
+Educational purposes, vulnerability research and authorized security testing only.
 
-The original vulnerability and the independent experiments documented here are distinct. No claim of independent vulnerability discovery, universal exploitability or successful end-to-end exploitation should be inferred without supporting evidence.
-
----
-
-<p align="center">
-  <strong>Java4Shell — OpenJDK Security Research</strong>
-</p>
+The original vulnerability and the independent experiments documented here are distinct. No claim of independent discovery or universal exploitability is made.
