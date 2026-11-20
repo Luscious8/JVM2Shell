@@ -43,8 +43,6 @@ This project focuses on understanding the vulnerability, documenting the reprodu
 
 **Research scope:** The repository contains the original community toolkit alongside a separate experimental lab. Results from the lab are documented independently from the original vulnerability advisory.
 
-> Important: A successful shell in a lab is not, by itself, proof that every preceding stage of the vulnerability chain caused that shell. The exact causal relationship must be independently validated.
-
 ## Vulnerability Information
 
 | Property | Details |
